@@ -2,15 +2,17 @@
 import torch
 import argparse
 import torch.nn as nn
+from torch.utils.data import DataLoader
 import torch.optim as opt
 from PIL import Image
 import argparse
 import numpy as np
 from albumentations import Compose, Resize, Normalize, ColorJitter, HorizontalFlip, VerticalFlip
+import glob
 import os
+import re
 
-from learnerable_seg import PromptSAM
-from scheduler import PolyLRScheduler
+
 
 parser = argparse.ArgumentParser("Learnable prompt")
 parser.add_argument("--image", type=str, required=True, 
@@ -36,30 +38,66 @@ parser.add_argument("--weight_decay", default=5e-4, type=float,
                     help="weight decay for the optimizer")
 parser.add_argument("--momentum", default=0.9, type=float,
                     help="momentum for the sgd")
+parser.add_argument("--batch_size", default=1, type=int)
+parser.add_argument("--divide", action="store_true", default=False,
+                    help="whether divide the mask")
+parser.add_argument("--divide_value", type=int, default=255, 
+                    help="divided value")
+parser.add_argument("--num_workers", "-j", type=int, default=1, 
+                    help="divided value")
+parser.add_argument("--device", default="0", type=str)
+parser.add_argument("--model_type", default="sam", choices=["dino", "sam"], type=str,
+                    help="backbone type")
+args = parser.parse_args()
+os.environ["CUDA_VISIBLE_DEVICES"] = args.device
 
-def batch_inter_union(pred, target, num_classes):
-    if pred.dim() == 4:
-        pred = torch.max(pred, dim=1)[1]
-    mini = 1
-    maxi = num_classes
-    nbins = num_classes
-    pred = pred.long() + 1
-    target = target.long() + 1
-    pred = pred * (target > 0)
-    target = target * (target > 0)
-    intersection = pred * (pred == target)
-    area_inter = torch.histc(intersection, bins=nbins, min=mini, max=maxi)
-    area_out = torch.histc(pred, bins=nbins, min=mini, max=maxi)
-    area_target = torch.histc(target, bins=nbins, min=mini, max=maxi)
-    area_union = area_out + area_target - area_inter
-    assert torch.sum(area_inter > area_union).item() == 0, "Intersection area should be smaller than Union area"
-    return area_inter.cpu(), area_union.cpu()
+from learnerable_seg import PromptSAM, PromptDiNo
+from scheduler import PolyLRScheduler
+from metrics.metric import Metric
 
-def comput_iou(output, target, eps=1e-9):
-    num_classes = output.size(1)
-    inter, union = batch_inter_union(output, target, num_classes)
-    iou = inter / (union + eps)
-    return iou.mean()
+class SegDataset:
+    def __init__(self, img_paths, mask_paths, 
+                 mask_divide=False, divide_value=255,
+                 pixel_mean=[0.5]*3, pixel_std=[0.5]*3,
+                 img_size=1024) -> None:
+        self.img_paths = img_paths
+        self.mask_paths = mask_paths
+        self.length = len(img_paths)
+        self.mask_divide = mask_divide
+        self.divide_value = divide_value
+        self.pixel_mean = pixel_mean
+        self.pixel_std = pixel_std
+        self.img_size = img_size
+    
+    def __len__(self):
+        return self.length
+    
+    def __getitem__(self, index):
+        img_path = self.img_paths[index]
+        mask_path = self.mask_paths[index]
+        img = Image.open(img_path).convert("RGB")
+        img = np.asarray(img)
+        mask = Image.open(mask_path).convert("L")
+        mask = np.asarray(mask)
+        if self.mask_divide:
+            mask = mask // self.divide_value
+        transform = Compose(
+            [
+                ColorJitter(),
+                VerticalFlip(),
+                HorizontalFlip(),
+                Resize(self.img_size, self.img_size),
+                Normalize(mean=self.pixel_mean, std=self.pixel_std)
+            ]
+        )
+        aug_data = transform(image=img, mask=mask)
+        x = aug_data["image"]
+        target = aug_data["mask"]
+        if img.ndim == 3:
+            x = np.transpose(x, axes=[2, 0, 1])
+        elif img.ndim == 2:
+            x = np.expand_dims(x, axis=0)
+        return torch.from_numpy(x), torch.from_numpy(target)
 
 def main(args):
     img_path = args.image
@@ -70,31 +108,41 @@ def main(args):
     save_path = args.save_path
     optimizer = args.optimizer
     weight_decay = args.weight_decay
+    lr = args.lr
     momentum = args.momentum
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    num_classes = args.num_classes
-    model = PromptSAM(model_name, checkpoint=checkpoint, num_classes=num_classes)
-    img = Image.open(img_path).convert("RGB")
-    img = np.asarray(img)
-    mask = Image.open(mask_path).convert("L")
-    mask = np.asarray(mask)
+    bs = args.batch_size
+    divide = args.divide
+    divide_value = args.divide_value
+    num_workers = args.num_workers
+    model_type = args.model_type
     # pixel_mean=[123.675, 116.28, 103.53],
     # pixel_std=[58.395, 57.12, 57.375],
     # pixel_mean = np.array(pixel_mean) / 255
     # pixel_std = np.array(pixel_std) / 255
     pixel_mean = [0.5]*3
     pixel_std = [0.5]*3
-    lr = args.lr
-    transform = Compose(
-        [
-            ColorJitter(),
-            VerticalFlip(),
-            HorizontalFlip(),
-            Resize(1024, 1024),
-            Normalize(mean=pixel_mean, std=pixel_std)
-        ]
-    )
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    num_classes = args.num_classes
+    basename = os.path.basename(img_path)
+    _, ext = os.path.splitext(basename)
+    if ext == "":
+        regex = re.compile(".*\.(jpe?g|png|gif|tif|bmp)$", re.IGNORECASE)
+        img_paths = [file for file in glob.glob(os.path.join(img_path, "*.*")) if regex.match(file)]
+        print("train with {} imgs".format(len(img_paths)))
+        mask_paths = [os.path.join(mask_path, os.path.basename(file)) for file in img_paths]
+    else:
+        bs = 1
+        img_paths = [img_path]
+        mask_paths = [mask_path]
+        num_workers = 1
+    if model_type == "sam":
+        model = PromptSAM(model_name, checkpoint=checkpoint, num_classes=num_classes, reduction=4, upsample_times=4, groups=8)
+    elif model_type == "dino":
+        model = PromptDiNo(name=model_name, checkpoint=checkpoint, num_classes=num_classes)
+    dataset = SegDataset(img_paths, mask_paths=mask_paths, mask_divide=divide, divide_value=divide_value,
+                         pixel_mean=pixel_mean, pixel_std=pixel_std)
+    dataloader = DataLoader(dataset, batch_size=bs, shuffle=True, num_workers=num_workers)
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
@@ -104,33 +152,34 @@ def main(args):
     elif optimizer == "sgd":
         optim = opt.SGD([{"params":model.parameters(), "initia_lr": lr}], lr=lr, weight_decay=weight_decay, momentum=momentum, nesterov=True)
     loss_func = nn.CrossEntropyLoss()
-    scheduler = PolyLRScheduler(optim, num_images=1, batch_size=1, epochs=epochs)
+    scheduler = PolyLRScheduler(optim, num_images=len(img_paths), batch_size=bs, epochs=epochs)
+    metric = Metric(num_classes=num_classes)
     best_iou = 0.
     for epoch in range(epochs):
-        aug_data = transform(image=img, mask=mask)
-        x = aug_data["image"]
-        target = aug_data["mask"]
-        x = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0).to(device)
-        target = torch.from_numpy(target).unsqueeze(0).to(device, dtype=torch.long)
-        optim.zero_grad()
-        if device_type == "cuda" and args.mix_precision:
-            x = x.to(dtype=torch.float16)
-            with torch.autocast(device_type=device_type, dtype=torch.float16):
+        for i, (x, target) in enumerate(dataloader):
+            x = x.to(device)
+            target = target.to(device, dtype=torch.long)
+            optim.zero_grad()
+            if device_type == "cuda" and args.mix_precision:
+                x = x.to(dtype=torch.float16)
+                with torch.autocast(device_type=device_type, dtype=torch.float16):
+                    pred = model(x)
+                    loss = loss_func(pred, target)
+
+                scaler.scale(loss).backward()
+                scaler.step(optim)
+                scaler.update()
+            else:
+                x = x.to(detype=torch.float32)
                 pred = model(x)
                 loss = loss_func(pred, target)
-
-            scaler.scale(loss).backward()
-            scaler.step(optim)
-            scaler.update()
-        else:
-            x = x.to(detype=torch.float32)
-            pred = model(x)
-            loss = loss_func(pred, target)
-            loss.backward()
-            optim.step()
-        iou = comput_iou(torch.softmax(pred, dim=1), target)
-        scheduler.step()
-        print("epoch-{}:{} iou:{}".format(epoch, loss, iou.item()))
+                loss.backward()
+                optim.step()
+            metric.update(torch.softmax(pred, dim=1), target)
+            print("epoch:{}-{}: loss:{}".format(epoch+1, i+1, loss.item()))
+            scheduler.step()
+        iou = np.nanmean(metric.evaluate()["iou"][1:].numpy())
+        print("epoch-{}: iou:{}".format(epoch, iou.item()))
         if iou > best_iou:
             best_iou = iou
             torch.save(
@@ -138,5 +187,5 @@ def main(args):
             )
 
 if __name__ == "__main__":
-    args = parser.parse_args()
+    
     main(args)
