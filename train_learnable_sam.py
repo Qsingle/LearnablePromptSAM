@@ -48,6 +48,7 @@ parser.add_argument("--num_workers", "-j", type=int, default=1,
 parser.add_argument("--device", default="0", type=str)
 parser.add_argument("--model_type", default="sam", choices=["dino", "sam"], type=str,
                     help="backbone type")
+
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.device
 
@@ -136,12 +137,14 @@ def main(args):
         img_paths = [img_path]
         mask_paths = [mask_path]
         num_workers = 1
+    img_size = 1024
     if model_type == "sam":
-        model = PromptSAM(model_name, checkpoint=checkpoint, num_classes=num_classes, reduction=4, upsample_times=4, groups=8)
+        model = PromptSAM(model_name, checkpoint=checkpoint, num_classes=num_classes, reduction=4, upsample_times=2, groups=4)
     elif model_type == "dino":
         model = PromptDiNo(name=model_name, checkpoint=checkpoint, num_classes=num_classes)
+        img_size = 518
     dataset = SegDataset(img_paths, mask_paths=mask_paths, mask_divide=divide, divide_value=divide_value,
-                         pixel_mean=pixel_mean, pixel_std=pixel_std)
+                         pixel_mean=pixel_mean, pixel_std=pixel_std, img_size=img_size)
     dataloader = DataLoader(dataset, batch_size=bs, shuffle=True, num_workers=num_workers)
     scaler = torch.cuda.amp.grad_scaler.GradScaler()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -183,7 +186,7 @@ def main(args):
         if iou > best_iou:
             best_iou = iou
             torch.save(
-                model.state_dict(), os.path.join(save_path, "sam_{}_prompt.pth".format(model_name))
+                model.state_dict(), os.path.join(save_path, "{}_{}_prompt.pth".format(model_type, model_name))
             )
 
 if __name__ == "__main__":

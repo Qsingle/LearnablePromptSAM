@@ -1,37 +1,33 @@
 # LearnablePromptSAM
-Try to use the SAM-ViT as the backbone to create the visual prompt tuning model for semantic segmentation.
+Try to use the SAM-ViT as the backbone to create the visual prompt tuning model for semantic segmentation.  More of the details can be seen at the technical report at [link](https://arxiv.org/abs/2304.13425)
 
 
 
-## Some samples for the one-shot learning
+## Motivation
 
-+ OCTA Vessel Segmentation (It seems that the thin vessel cannot be recognized.)
+As the original SAM can not be used at the optical images like color fundus and OCT (As the following image shows.), thus we introduce the learnable prompt layer (Adapter) to fine-tune the SAM.
 
-  ![OCTA](images/octa.png)
+![Intro](images/intro.png)
 
-  <center>Fig.1 Segmentation results of OCTA. We only segment the vessel, and we use one image from the ROSE-1 to train the model.</center>
 
-+ Color Fundus
 
-  + Vessel Segmentation
+## Structure
 
-    ![vessel_cf](images/cf_vessel.png)
+![structure](images/framework.png)
 
-    <center>Fig.2 Segmentation results of fundus. We only segment the vessel, and we use one image from the FIVES to train the model.</center>
 
-  + Lesion Segmentation (It seems that the the model is not suitable for the segmentation of the discrete lesions, may using few-shot learning can resolve it?)
 
-    ​	![Color fundus lesion](images/cf_lesion.png)
 
-    <center>Fig.3 Results for lesion segmentation of the lesion in color fundus. We use one image from the IDRiD dataset to train the model.</center>
 
-+ OCT Layer Segmentation
+## Experiments Results
 
-  + AROI dataset (It seems that we needs to use the few-shot learning to help the model see more settings.)
++ The results of the one-shot learning:
 
-    ![AROI_results](images/oct.png)
+  ![One-shot](images/one-shot.png)
 
-  <center>Fig.4 Results for OCT segmentation. We use one image from the AROI dataset to train the model.</center>
++ Results for the zero-shot after tuned.
+
+  ![zero-shot](images/zero-shot.png)
 
 ## Usage
 
@@ -58,6 +54,13 @@ Try to use the SAM-ViT as the backbone to create the visual prompt tuning model 
 
 
 
+## 2023.04.27 
+
++ Update README
++ Update code.
+
+
+
 ## 2023.04.13
 
 + Upload the sample code for the model.
@@ -70,8 +73,10 @@ Try to use the SAM-ViT as the backbone to create the visual prompt tuning model 
 
 - [ ] Dynamic Head for segmentation.
 - [ ] Optimize the training process.
-- [ ] Support for the training of few-shot learning.
-- [ ] Improving the performance of the model.
+
+- [x] Support for the training of few-shot learning.
+
+- [x] Improving the performance of the model.
 
 
 
