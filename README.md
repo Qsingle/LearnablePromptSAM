@@ -54,6 +54,12 @@ As the original SAM can not be used at the optical images like color fundus and 
 
 
 
+## 2023.08.15
++ Fix the dtype error in train_learnable_sam.py
++ We merge this reposity to [imed_vision](https://github.com/Qsingle/imed_vision) and add the implementation for the DPT at the new version.
+
+
+
 ## 2023.04.27 
 
 + Update README

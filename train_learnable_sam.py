@@ -173,7 +173,7 @@ def main(args):
                 scaler.step(optim)
                 scaler.update()
             else:
-                x = x.to(detype=torch.float32)
+                x = x.to(dtype=torch.float32)
                 pred = model(x)
                 loss = loss_func(pred, target)
                 loss.backward()
